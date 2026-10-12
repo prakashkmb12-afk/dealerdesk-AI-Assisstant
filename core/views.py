@@ -59,6 +59,14 @@ def product_list(request):
         return paginator.get_paginated_response(serializer.data)
 
     elif request.method == "POST":
+        sku = request.data.get("sku") if isinstance(request.data, dict) else None
+        if sku and Product.objects.filter(sku=sku).exists():
+            raise ContractAPIException(
+                code="DUPLICATE",
+                message=f"Product with SKU '{sku}' already exists.",
+                status_code=409,
+            )
+
         serializer = ProductCreateSerializer(data=request.data)
         if not serializer.is_valid():
             raise ContractAPIException(
@@ -66,14 +74,6 @@ def product_list(request):
                 message="Invalid product data.",
                 details=[f"{k}: {v}" for k, v in serializer.errors.items()],
                 status_code=400,
-            )
-
-        sku = serializer.validated_data.get("sku")
-        if Product.objects.filter(sku=sku).exists():
-            raise ContractAPIException(
-                code="DUPLICATE",
-                message=f"Product with SKU '{sku}' already exists.",
-                status_code=409,
             )
 
         try:
@@ -159,6 +159,14 @@ def dealer_list(request):
         return paginator.get_paginated_response(serializer.data)
 
     elif request.method == "POST":
+        dealer_code = request.data.get("dealer_code") if isinstance(request.data, dict) else None
+        if dealer_code and Dealer.objects.filter(dealer_code=dealer_code).exists():
+            raise ContractAPIException(
+                code="DUPLICATE",
+                message=f"Dealer with code '{dealer_code}' already exists.",
+                status_code=409,
+            )
+
         serializer = DealerCreateSerializer(data=request.data)
         if not serializer.is_valid():
             raise ContractAPIException(
@@ -166,14 +174,6 @@ def dealer_list(request):
                 message="Invalid dealer data.",
                 details=[f"{k}: {v}" for k, v in serializer.errors.items()],
                 status_code=400,
-            )
-
-        dealer_code = serializer.validated_data.get("dealer_code")
-        if Dealer.objects.filter(dealer_code=dealer_code).exists():
-            raise ContractAPIException(
-                code="DUPLICATE",
-                message=f"Dealer with code '{dealer_code}' already exists.",
-                status_code=409,
             )
 
         try:
@@ -306,3 +306,56 @@ def order_deliver(request, order_number):
 
     order = deliver_order(order)
     return Response(OrderSerializer(order).data)
+
+
+# ---- Dealer Assistant (GenAI) ---------------------------------------------
+@api_view(["POST"])
+def assistant_chat(request):
+    session_id = request.data.get("session_id")
+    dealer_id = request.data.get("dealer_id")
+    message = request.data.get("message")
+
+    if not session_id or not isinstance(session_id, str):
+        raise ContractAPIException(code="VALIDATION_ERROR", message="session_id is required.")
+    if dealer_id is None or not isinstance(dealer_id, int):
+        raise ContractAPIException(code="VALIDATION_ERROR", message="dealer_id must be an integer.")
+    if not message or not isinstance(message, str):
+        raise ContractAPIException(code="VALIDATION_ERROR", message="message is required.")
+
+    from .assistant.orchestrator import AssistantOrchestrator
+    orchestrator = AssistantOrchestrator(session_id=session_id, dealer_id=dealer_id)
+    response_data = orchestrator.run(user_message=message)
+
+    return Response(response_data, status=status.HTTP_200_OK)
+
+
+# ---- Forecasting & Reorder (ML) -------------------------------------------
+@api_view(["GET"])
+def forecast_detail(request, sku):
+    from .reorder import ReorderService
+    service = ReorderService()
+    forecast = service.get_sku_forecast(sku)
+    if forecast is None:
+        raise ContractAPIException(
+            code="NOT_FOUND",
+            message=f"Forecast for SKU '{sku}' not found or not a forecast SKU.",
+            status_code=404,
+        )
+
+    return Response({"sku": sku, "forecast": forecast}, status=status.HTTP_200_OK)
+
+
+@api_view(["GET"])
+def reorder_suggestions(request):
+    from .reorder import ReorderService
+    service = ReorderService()
+    results = service.get_reorder_suggestions()
+    return Response({"results": results}, status=status.HTTP_200_OK)
+
+
+# ---- Supplier Sync (Bonus Part B) -----------------------------------------
+@api_view(["POST"])
+def supplier_sync_view(request):
+    from .supplier_sync import sync_supplier_catalogue
+    result = sync_supplier_catalogue()
+    return Response(result, status=status.HTTP_200_OK)
