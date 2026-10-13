@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 import re
 from django.conf import settings
 from django.db import transaction
@@ -123,17 +124,42 @@ class AssistantOrchestrator:
             "actions": actions,
         }
 
+    def _get_groq_model(self, client) -> str:
+        preferred = getattr(settings, "GROQ_MODEL", None) or os.environ.get("GROQ_MODEL")
+        if preferred:
+            return preferred
+        try:
+            available = {m.id for m in client.models.list().data}
+            candidates = ["llama-3.3-70b-versatile", "qwen/qwen3.8-27b", "openai/gpt-oss-120b", "openai/gpt-oss-20b"]
+            for cand in candidates:
+                if cand in available:
+                    return cand
+        except Exception:
+            pass
+        return "llama-3.3-70b-versatile"
+
     def _run_groq_loop(self, client, user_message: str):
         """Runs multi-turn tool-calling with Groq."""
         history = self.load_session_history()
-        messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+        dealer = Dealer.objects.filter(id=self.dealer_id).first()
+        dealer_context = f"\n\nCURRENT SESSION ACTIVE DEALER CONTEXT:\n- Active Dealer ID: {self.dealer_id}"
+        if dealer:
+            dealer_context += f" ({dealer.name}, {dealer.dealer_code}, {dealer.city})\n"
+        dealer_context += (
+            f"\nOPERATIONAL RULE FOR ORDERS: The active dealer ID is {self.dealer_id}. "
+            f"When calling `create_draft_order`, ALWAYS pass `dealer_id: {self.dealer_id}`. "
+            "NEVER ask the user to provide their dealer ID, code, or details because the dealer is already active in this session. "
+            "When confirming creation, clearly state that a DRAFT order was created with its order number and grand total."
+        )
+
+        messages = [{"role": "system", "content": f"{SYSTEM_PROMPT}{dealer_context}"}]
         messages.extend(history)
         messages.append({"role": "user", "content": user_message})
 
         tool_calls_log = []
         actions = []
         max_turns = 5
-        model_name = "llama-3.3-70b-versatile"
+        model_name = self._get_groq_model(client)
 
         for _ in range(max_turns):
             response = client.chat.completions.create(
@@ -190,13 +216,15 @@ class AssistantOrchestrator:
             return execute_check_stock(skus=skus)
 
         elif fn_name == "create_draft_order":
-            dealer_id = fn_args.get("dealer_id", self.dealer_id)
+            dealer_id = fn_args.get("dealer_id") or self.dealer_id
             items = fn_args.get("items", [])
             res = execute_create_draft_order(dealer_id=dealer_id, items=items)
             if res.get("success") and "order_number" in res:
                 actions.append({
                     "type": "draft_order_created",
                     "order_number": res["order_number"],
+                    "dealer_id": dealer_id,
+                    "grand_total": res.get("grand_total"),
                 })
             return res
 
@@ -217,8 +245,19 @@ class AssistantOrchestrator:
                 actions,
             )
 
-        # 2. Check for order creation intent
-        order_match = re.search(r"(?:order|draft|buy|put aside|reserve)\s+(\d+)\s+(?:units?|pieces?|of)?\s*([A-Z]{3}-\d{4})", user_message, re.IGNORECASE)
+        # 2. Check for reorder enquiries
+        if any(w in msg_lower for w in ["reorder", "re-order", "need to be reordered", "low stock"]):
+            from core.reorder import ReorderService
+            reorder_service = ReorderService()
+            suggestions = [s for s in reorder_service.get_reorder_suggestions() if s.get("reorder_qty", 0) > 0][:4]
+            if suggestions:
+                reorder_lines = [f"{s['sku']} (Current stock: {s['current_stock']}, Suggested reorder: {s['reorder_qty']} units)" for s in suggestions]
+                return f"Based on live inventory and lead times, the following products need reordering: {'; '.join(reorder_lines)}. You can view the complete list in the Reorder Suggestions tab.", tool_calls_log, actions
+            else:
+                return "All inventory levels are currently above their reorder points. No urgent reorders are required at this time.", tool_calls_log, actions
+
+        # 3. Check for order creation intent
+        order_match = re.search(r"(?:order|draft|buy|put aside|reserve|create a draft order|create draft order)\s+(?:for\s+)?(\d+)\s*(?:units?|pieces?|of)?\s*([A-Z]{3}-\d{4})", user_message, re.IGNORECASE)
         if order_match:
             qty = int(order_match.group(1))
             sku = order_match.group(2).upper()
@@ -228,14 +267,15 @@ class AssistantOrchestrator:
             if res.get("success"):
                 return (
                     f"Draft order {res['order_number']} has been created for {qty} unit(s) of {sku}. "
-                    f"Total amount is ₹{res['grand_total']} including GST.",
+                    f"Total amount is ₹{res['grand_total']} including GST (18%). "
+                    "Please note that this is a DRAFT order; you can confirm it from the Orders page when ready to deduct warehouse stock.",
                     tool_calls_log,
                     actions,
                 )
             else:
                 return f"Could not create draft order: {res.get('error', 'unknown error')}", tool_calls_log, actions
 
-        # 3. Check for specific SKU stock enquiry
+        # 4. Check for specific SKU stock enquiry
         sku_matches = re.findall(r"\b[A-Z]{3}-\d{4}\b", user_message.upper())
         if sku_matches and any(w in msg_lower for w in ["stock", "price", "available", "cost", "how many"]):
             args = {"skus": sku_matches}

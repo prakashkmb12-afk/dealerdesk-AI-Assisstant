@@ -45,7 +45,7 @@ ROOT_URLCONF = "dealerdesk.urls"
 TEMPLATES = [
     {
         "BACKEND": "django.template.backends.django.DjangoTemplates",
-        "DIRS": [],
+        "DIRS": [BASE_DIR / "templates"],
         "APP_DIRS": True,
         "OPTIONS": {
             "context_processors": [
@@ -63,7 +63,12 @@ WSGI_APPLICATION = "dealerdesk.wsgi.application"
 DATABASE_URL = os.environ.get("DATABASE_URL")
 if not DATABASE_URL:
     raise ImproperlyConfigured("Set DATABASE_URL to a PostgreSQL URL, e.g. postgres://user:pass@localhost:5432/dealerdesk")
-DATABASES = {"default": dj_database_url.parse(DATABASE_URL, conn_max_age=0)}
+parsed_db = dj_database_url.parse(DATABASE_URL, conn_max_age=0)
+if not parsed_db.get("NAME") and "@" in DATABASE_URL:
+    import re
+    encoded_url = re.sub(r'^(.*?://.*?):(.*?)@', lambda m: f"{m.group(1)}:{m.group(2).replace('#', '%23')}@", DATABASE_URL)
+    parsed_db = dj_database_url.parse(encoded_url, conn_max_age=0)
+DATABASES = {"default": parsed_db}
 if DATABASES["default"]["ENGINE"] != "django.db.backends.postgresql":
     raise ImproperlyConfigured("DealerDesk requires PostgreSQL. SQLite can't test the concurrency rules.")
 
@@ -75,6 +80,7 @@ USE_I18N = True
 USE_TZ = True
 
 STATIC_URL = "static/"
+STATICFILES_DIRS = [BASE_DIR / "static"]
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 # ---- API: no authentication in this assignment ----------------------------------------

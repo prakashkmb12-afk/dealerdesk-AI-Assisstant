@@ -134,6 +134,9 @@ def execute_check_stock(skus: list) -> list:
             results.append({
                 "sku": p.sku,
                 "name": p.name,
+                "category": p.category,
+                "brand": p.brand,
+                "vehicle_fitment": p.vehicle_fitment,
                 "stock": p.stock,
                 "price": str(p.price),
                 "in_stock": p.stock > 0,

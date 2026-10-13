@@ -359,3 +359,10 @@ def supplier_sync_view(request):
     from .supplier_sync import sync_supplier_catalogue
     result = sync_supplier_catalogue()
     return Response(result, status=status.HTTP_200_OK)
+
+
+# ---- Web App Frontend ----------------------------------------------------
+def index(request):
+    from django.shortcuts import render
+    return render(request, "index.html")
+
