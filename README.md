@@ -15,6 +15,7 @@
 
 | Attribute | Specification |
 |---|---|
+| **Candidate Track** | `aiml` (AI / ML Intern) |
 | **Walkthrough Video** | [https://youtu.be/placeholder-video-url](https://youtu.be/placeholder-video-url) |
 | **Architecture Document** | [DECISIONS.md](file:///c:/Users/Balaji/Downloads/VIKMO%20DealerDesk%20Assignment/DECISIONS.md) |
 | **Contract Specifications** | [API_CONTRACT.md](file:///c:/Users/Balaji/Downloads/VIKMO%20DealerDesk%20Assignment/API_CONTRACT.md) |
